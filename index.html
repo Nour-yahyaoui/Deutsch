@@ -25,12 +25,22 @@
   @keyframes shake{ 10%,90%{transform:translateX(-1px)} 20%,80%{transform:translateX(2px)} 30%,50%,70%{transform:translateX(-4px)} 40%,60%{transform:translateX(4px)} }
   .shake{ animation:shake .4s; }
   input:focus{ outline:none; }
+  button{ cursor:pointer; transition: transform .08s ease, box-shadow .15s ease, filter .15s ease; }
+  button:hover{ filter:brightness(0.97); }
+  button:active{ transform:scale(.98); }
+  .nav-btn:hover{ background:var(--paper-2) !important; }
+  .nav-btn.is-active:hover{ background:var(--stamp) !important; }
+  @media (min-width:768px){
+    #topbar{ border:1px solid var(--line); box-shadow:0 1px 3px rgba(30,42,68,.05); }
+    #sidenav{ border:1px solid var(--line); box-shadow:0 1px 3px rgba(30,42,68,.05); background:#fff; }
+    .card-hover:hover{ box-shadow:0 4px 16px rgba(30,42,68,.08); transform:translateY(-1px); }
+  }
 </style>
 </head>
 <body class="min-h-screen" style="padding-top:env(safe-area-inset-top,0px);">
 
 <div id="shell" class="md:max-w-4xl lg:max-w-5xl md:mx-auto md:flex md:gap-6 md:px-6 md:pt-6 md:items-start">
-  <aside id="sidenav" class="hidden md:flex md:flex-col md:w-52 md:sticky md:top-6 md:shrink-0 gap-1 p-3 rounded-2xl border"></aside>
+  <aside id="sidenav" class="hidden md:flex md:flex-col md:w-52 md:sticky md:top-6 md:shrink-0 gap-1 p-3 rounded-2xl"></aside>
   <div id="app" class="max-w-md mx-auto md:max-w-2xl lg:max-w-3xl md:mx-0 md:flex-1 min-h-screen flex flex-col pb-20 md:pb-10"></div>
 </div>
 
@@ -125,9 +135,10 @@ function primaryBtn(text, onClick){
 /* ---------- top bar ---------- */
 function renderTopBar(){
   const bar = el('div','sticky top-0 z-10 backdrop-blur border-b');
+  bar.id = 'topbar';
   bar.style.background='rgba(240,242,236,0.92)'; bar.style.borderColor='var(--line)';
   bar.style.paddingTop='env(safe-area-inset-top,0px)';
-  bar.classList.add('md:rounded-2xl','md:border','md:static');
+  bar.classList.add('md:rounded-2xl','md:static','md:mb-4');
   const inner = el('div','px-4 py-3 flex items-center gap-3');
 
   if(ui.tab==='home' && ui.courseId){
@@ -196,7 +207,7 @@ function renderSideNav(){
   nav.appendChild(brand);
   NAV_TABS.forEach(([id,label])=>{
     const active = ui.tab===id;
-    const b = el('button','w-full text-right px-3 py-2.5 rounded-xl text-sm flex items-center justify-between');
+    const b = el('button','nav-btn w-full text-right px-3 py-2.5 rounded-xl text-sm flex items-center justify-between'+(active?' is-active':''));
     b.style.background = active ? 'var(--stamp)' : 'transparent';
     b.style.color = active ? '#fff' : 'var(--ink)';
     b.style.fontWeight = active ? '700' : '500';
@@ -223,10 +234,10 @@ function renderHome(){
   hero.innerHTML = `<div class="font-de text-2xl font-semibold">Willkommen 👋</div>
     <div class="text-sm mt-1 opacity-80">${levelLabel(currentLevel())} — ${learnedCount()} كلمة محفوظة</div>`;
   wrap.appendChild(hero);
-  const grid = el('div','grid grid-cols-2 sm:grid-cols-3 gap-3');
+  const grid = el('div','grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 md:gap-4');
   DATA.courses.forEach(course=>{
     const items=countCourseItems(course), learned=countCourseLearned(course), done=items>0&&learned===items;
-    const card = el('button','text-right p-3 rounded-2xl border flex flex-col gap-3 items-start');
+    const card = el('button','card-hover text-right p-3 rounded-2xl border flex flex-col gap-3 items-start');
     card.style.borderColor='var(--line)'; card.style.background= done ? 'var(--paper-2)' : '#fff';
     const badge = el('div','relative w-11 h-11 flex items-center justify-center font-de font-bold text-sm stamp-ring');
     badge.style.color = done ? 'var(--stamp)' : 'var(--stamp-2)'; badge.textContent = course.badge;
@@ -247,7 +258,7 @@ function renderCourseLessons(){
   course.lessons.forEach(lesson=>{
     const items=lesson.items.length, learned=lesson.items.filter(it=>progress.learned[it.id]).length;
     const pct = items? Math.round(learned/items*100):0;
-    const card = el('button','w-full text-right p-4 rounded-2xl border flex items-center gap-3');
+    const card = el('button','card-hover w-full text-right p-4 rounded-2xl border flex items-center gap-3');
     card.style.borderColor='var(--line)'; card.style.background='#fff';
     const ring = el('div','relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center text-xs font-semibold');
     ring.style.background = pct===100 ? 'var(--stamp)' : 'var(--paper-2)';
@@ -409,7 +420,7 @@ function renderQuizRunner(session, onAnswer, onExit){
     wrap.appendChild(prompt);
     const opts = el('div','flex flex-col gap-2');
     q.options.forEach(opt=>{
-      const b = el('button','p-3 rounded-xl border text-sm text-right', q.dir==='de-ar'?opt:`<span dir="ltr">${opt}</span>`);
+      const b = el('button','card-hover p-3 rounded-xl border text-sm text-right', q.dir==='de-ar'?opt:`<span dir="ltr">${opt}</span>`);
       b.style.borderColor='var(--line)'; b.style.background='#fff';
       b.onclick=()=>{
         if(session.answered) return;
@@ -504,7 +515,7 @@ function renderPractice(){
       DATA.dialogues.forEach(d=>{
         const needed = d.lines.filter(l=>l.item_id).map(l=>l.item_id);
         const have = needed.every(id=>progress.learned[id]);
-        const card = el('button','w-full text-right p-4 rounded-2xl border flex items-center gap-3');
+        const card = el('button','card-hover w-full text-right p-4 rounded-2xl border flex items-center gap-3');
         card.style.borderColor='var(--line)'; card.style.background = have ? '#fff' : 'var(--paper-2)';
         card.innerHTML = `<div class="flex-1">
             <div class="font-de font-semibold text-sm">${have?'':'🔒 '}${d.title_de}</div>
