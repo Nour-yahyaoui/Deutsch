@@ -1,0 +1,616 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sprachpass — جواز اللغة</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&family=Cairo:wght@400;600;700&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ink:#1E2A44; --paper:#F0F2EC; --paper-2:#E6E9DF;
+    --stamp:#B97A2C; --stamp-2:#7C8F6E; --line:#CBD1C2;
+    --bad:#B4483F; --good:#5C7A4E;
+  }
+  html,body{ background:var(--paper); }
+  body{ font-family:'Cairo','Inter',sans-serif; color:var(--ink); }
+  .font-de{ font-family:'Fraunces','Cairo',serif; }
+  .stamp-ring{ border:2px solid currentColor; border-radius:9999px; }
+  .stamp-ring::before{ content:""; position:absolute; inset:4px; border:1px dashed currentColor; border-radius:9999px; opacity:.45; }
+  ::-webkit-scrollbar{ display:none; }
+  .no-scrollbar{ -ms-overflow-style:none; scrollbar-width:none; }
+  @keyframes pop{ 0%{ transform:scale(.94); opacity:0; } 100%{ transform:scale(1); opacity:1; } }
+  .pop-in{ animation:pop .16s ease-out; }
+  @keyframes shake{ 10%,90%{transform:translateX(-1px)} 20%,80%{transform:translateX(2px)} 30%,50%,70%{transform:translateX(-4px)} 40%,60%{transform:translateX(4px)} }
+  .shake{ animation:shake .4s; }
+  input:focus{ outline:none; }
+</style>
+</head>
+<body class="min-h-screen" style="padding-top:env(safe-area-inset-top,0px);">
+
+<div id="app" class="max-w-md mx-auto min-h-screen flex flex-col pb-20"></div>
+
+<script>
+const STORAGE_KEY = 'sprachpass_progress_v1';
+const XP_ITEM = 10, XP_QUIZ_Q = 5, XP_PRACTICE = 8, XP_DAILY_BONUS = 25;
+
+function todayStr(){ return new Date().toISOString().slice(0,10); }
+function yesterdayStr(){ const d=new Date(); d.setDate(d.getDate()-1); return d.toISOString().slice(0,10); }
+
+function loadProgress(){
+  let p = {};
+  try{ p = JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; }catch(e){ p = {}; }
+  return Object.assign({
+    learned: {}, learnedOrder: [], xp: 0,
+    streak: { lastDate: null, count: 0 },
+    daily: { date: null, done: false, score: 0, total: 0 },
+    quizStats: { answered: 0, correct: 0 }
+  }, p);
+}
+function saveProgress(){ try{ localStorage.setItem(STORAGE_KEY, JSON.stringify(progress)); }catch(e){} }
+
+function touchStreak(){
+  const t = todayStr();
+  if(progress.streak.lastDate === t) return;
+  if(progress.streak.lastDate === yesterdayStr()) progress.streak.count += 1;
+  else progress.streak.count = 1;
+  progress.streak.lastDate = t;
+}
+
+function markLearned(id, on){
+  if(on){
+    if(!progress.learned[id]){
+      progress.learned[id] = true;
+      progress.learnedOrder.push(id);
+      progress.xp += XP_ITEM;
+      touchStreak();
+    }
+  } else if(progress.learned[id]){
+    delete progress.learned[id];
+    progress.learnedOrder = progress.learnedOrder.filter(x=>x!==id);
+    progress.xp = Math.max(0, progress.xp - XP_ITEM);
+  }
+  saveProgress();
+}
+
+function learnedIds(){ return Object.keys(progress.learned).filter(k=>progress.learned[k]); }
+function learnedCount(){ return learnedIds().length; }
+function currentLevel(){
+  const n = learnedCount();
+  if(n<20) return 1; if(n<60) return 2; if(n<120) return 3; return 4;
+}
+function levelLabel(l){ return {1:'مبتدئ A2',2:'أساسي A2',3:'متوسط A2',4:'متقدم A2'}[l]; }
+
+function hintReveal(answer, level, extra){
+  extra = extra||0;
+  const pct = {1:.6,2:.4,3:.2,4:.15}[level] ?? .3;
+  const n = Math.min(answer.length, Math.max(1, Math.round(answer.length*pct)) + extra);
+  return answer.split('').map((ch,i)=> (i<n || ch===' ') ? ch : '‗').join(' ');
+}
+
+let DATA=null, ITEM_MAP={}, progress=loadProgress();
+let ui = { tab:'home', courseId:null, lessonId:null, practiceSub:'sentences', activeDialogue:null,
+           quiz:null, daily:null };
+
+function el(tag,cls,html){ const e=document.createElement(tag); if(cls)e.className=cls; if(html!==undefined)e.innerHTML=html; return e; }
+
+function buildItemMap(){
+  DATA.courses.forEach(c=> c.lessons.forEach(l=> l.items.forEach(it=>{
+    ITEM_MAP[it.id] = Object.assign({}, it, { courseId:c.id, courseTitleDe:c.title_de, courseTitleAr:c.title_ar, lessonId:l.id, lessonTitleDe:l.title_de });
+  })));
+}
+
+/* ---------- shared UI bits ---------- */
+function statChip(label, value){
+  const d = el('div','px-3 py-2 rounded-xl text-center' );
+  d.style.background='var(--paper-2)';
+  d.innerHTML = `<div class="font-de font-bold text-base" style="color:var(--stamp)">${value}</div><div class="text-[11px] opacity-70">${label}</div>`;
+  return d;
+}
+function emptyState(msg){
+  const d = el('div','py-14 text-center text-sm opacity-60 px-6', msg);
+  return d;
+}
+function primaryBtn(text, onClick){
+  const b = el('button','w-full py-3 rounded-xl font-semibold text-sm text-white', text);
+  b.style.background = 'var(--stamp)';
+  b.onclick = onClick;
+  return b;
+}
+
+/* ---------- top bar ---------- */
+function renderTopBar(){
+  const bar = el('div','sticky top-0 z-10 backdrop-blur border-b');
+  bar.style.background='rgba(240,242,236,0.92)'; bar.style.borderColor='var(--line)';
+  bar.style.paddingTop='env(safe-area-inset-top,0px)';
+  const inner = el('div','max-w-md mx-auto px-4 py-3 flex items-center gap-3');
+
+  if(ui.tab==='home' && ui.courseId){
+    const back = el('button','shrink-0 w-9 h-9 rounded-full flex items-center justify-center border text-sm');
+    back.style.borderColor='var(--ink)'; back.textContent='›';
+    back.onclick=()=>{ if(ui.lessonId) ui.lessonId=null; else ui.courseId=null; render(); };
+    inner.appendChild(back);
+  }
+  const titles = {
+    home: ['Sprachpass', DATA.meta.subtitle_ar],
+    dashboard: ['Dashboard', 'لوحة التقدّم'],
+    quiz: ['Quiz', 'اختبر نفسك'],
+    practice: ['Sprechen', 'جمل وحوارات'],
+    daily: ['Tagesziel', 'التحدي اليومي']
+  };
+  let t = titles[ui.tab];
+  if(ui.tab==='home' && ui.courseId){
+    const c = DATA.courses.find(x=>x.id===ui.courseId);
+    t = ui.lessonId ? [c.lessons.find(l=>l.id===ui.lessonId).title_de, c.lessons.find(l=>l.id===ui.lessonId).title_ar]
+                     : [c.title_de, c.title_ar];
+  }
+  const titleWrap = el('div','flex-1 min-w-0');
+  titleWrap.appendChild(el('div','font-de font-semibold text-lg leading-tight truncate', t[0]));
+  titleWrap.appendChild(el('div','text-xs opacity-60 truncate', t[1]));
+  inner.appendChild(titleWrap);
+
+  const right = el('div','shrink-0 text-left flex items-center gap-2');
+  right.innerHTML = `
+    <div class="text-xs font-semibold" style="color:var(--stamp)">${progress.xp} XP</div>
+    <div class="text-xs opacity-70">🔥${progress.streak.count}</div>
+  `;
+  inner.appendChild(right);
+  bar.appendChild(inner);
+  return bar;
+}
+
+/* ---------- bottom nav ---------- */
+function renderBottomNav(){
+  const nav = el('div','fixed bottom-0 left-0 right-0 border-t z-20');
+  nav.style.background='rgba(240,242,236,0.97)'; nav.style.borderColor='var(--line)';
+  nav.style.paddingBottom='env(safe-area-inset-bottom,0px)';
+  const inner = el('div','max-w-md mx-auto grid grid-cols-5 text-center');
+  const tabs = [['home','الرئيسية'],['dashboard','لوحتي'],['quiz','اختبار'],['practice','تدرّب'],['daily','يومي']];
+  tabs.forEach(([id,label])=>{
+    const active = ui.tab===id;
+    const b = el('button','py-2.5 flex flex-col items-center gap-1');
+    const dot = el('div','w-1.5 h-1.5 rounded-full');
+    dot.style.background = active ? 'var(--stamp)' : 'transparent';
+    const lab = el('div','text-[11px]'+(active?' font-bold':' opacity-60'), label);
+    lab.style.color = active ? 'var(--stamp)' : 'var(--ink)';
+    b.appendChild(dot); b.appendChild(lab);
+    b.onclick=()=>{ ui.tab=id; if(id==='home'){ui.courseId=null;ui.lessonId=null;} ui.quiz=null; ui.activeDialogue=null; render(); };
+    inner.appendChild(b);
+  });
+  nav.appendChild(inner);
+  return nav;
+}
+
+/* ---------- HOME: courses / lessons / items ---------- */
+function countCourseItems(c){ return c.lessons.reduce((n,l)=>n+l.items.length,0); }
+function countCourseLearned(c){ return c.lessons.reduce((n,l)=>n+l.items.filter(it=>progress.learned[it.id]).length,0); }
+
+function renderHome(){
+  if(ui.courseId && ui.lessonId) return renderLessonItems();
+  if(ui.courseId) return renderCourseLessons();
+  const wrap = el('div','pt-4');
+  const hero = el('div','mb-6 p-4 rounded-2xl'); hero.style.background='var(--paper-2)';
+  hero.innerHTML = `<div class="font-de text-2xl font-semibold">Willkommen 👋</div>
+    <div class="text-sm mt-1 opacity-80">${levelLabel(currentLevel())} — ${learnedCount()} كلمة محفوظة</div>`;
+  wrap.appendChild(hero);
+  const grid = el('div','grid grid-cols-2 gap-3');
+  DATA.courses.forEach(course=>{
+    const items=countCourseItems(course), learned=countCourseLearned(course), done=items>0&&learned===items;
+    const card = el('button','text-right p-3 rounded-2xl border flex flex-col gap-3 items-start');
+    card.style.borderColor='var(--line)'; card.style.background= done ? 'var(--paper-2)' : '#fff';
+    const badge = el('div','relative w-11 h-11 flex items-center justify-center font-de font-bold text-sm stamp-ring');
+    badge.style.color = done ? 'var(--stamp)' : 'var(--stamp-2)'; badge.textContent = course.badge;
+    const info = el('div','w-full');
+    info.innerHTML = `<div class="font-de font-semibold text-sm leading-tight">${course.title_de}</div>
+      <div class="text-xs opacity-70 mt-0.5">${course.title_ar}</div>
+      <div class="text-[11px] mt-2 opacity-60">${learned}/${items}</div>`;
+    card.appendChild(badge); card.appendChild(info);
+    card.onclick=()=>{ ui.courseId=course.id; render(); };
+    grid.appendChild(card);
+  });
+  wrap.appendChild(grid);
+  return wrap;
+}
+function renderCourseLessons(){
+  const course = DATA.courses.find(c=>c.id===ui.courseId);
+  const wrap = el('div','pt-4 flex flex-col gap-3');
+  course.lessons.forEach(lesson=>{
+    const items=lesson.items.length, learned=lesson.items.filter(it=>progress.learned[it.id]).length;
+    const pct = items? Math.round(learned/items*100):0;
+    const card = el('button','w-full text-right p-4 rounded-2xl border flex items-center gap-3');
+    card.style.borderColor='var(--line)'; card.style.background='#fff';
+    const ring = el('div','relative w-10 h-10 shrink-0 rounded-full flex items-center justify-center text-xs font-semibold');
+    ring.style.background = pct===100 ? 'var(--stamp)' : 'var(--paper-2)';
+    ring.style.color = pct===100 ? '#fff' : 'var(--ink)';
+    ring.textContent = pct===100 ? '✓' : pct+'%';
+    const info = el('div','flex-1 min-w-0');
+    info.innerHTML = `<div class="font-de font-semibold text-sm">${lesson.title_de}</div>
+      <div class="text-xs opacity-70">${lesson.title_ar}</div>
+      <div class="w-full h-1.5 rounded-full mt-2" style="background:var(--paper-2)">
+      <div class="h-1.5 rounded-full" style="width:${pct}%; background:var(--stamp-2)"></div></div>`;
+    card.appendChild(ring); card.appendChild(info);
+    card.onclick=()=>{ ui.lessonId=lesson.id; render(); };
+    wrap.appendChild(card);
+  });
+  return wrap;
+}
+function renderLessonItems(){
+  const course = DATA.courses.find(c=>c.id===ui.courseId);
+  const lesson = course.lessons.find(l=>l.id===ui.lessonId);
+  const wrap = el('div','pt-4 flex flex-col gap-2.5');
+  lesson.items.forEach(item=>{
+    const isLearned = !!progress.learned[item.id];
+    const card = el('div','p-4 rounded-2xl border flex items-center gap-3 pop-in');
+    card.style.borderColor='var(--line)'; card.style.background= isLearned?'var(--paper-2)':'#fff';
+    const check = el('button','shrink-0 w-8 h-8 rounded-full border flex items-center justify-center text-sm');
+    check.style.borderColor = isLearned?'var(--stamp)':'var(--line)';
+    check.style.background = isLearned?'var(--stamp)':'transparent';
+    check.style.color = isLearned?'#fff':'var(--ink)';
+    check.textContent = isLearned?'✓':'';
+    check.onclick=()=>{ markLearned(item.id, !isLearned); render(); };
+    const text = el('div','flex-1 min-w-0 text-right');
+    text.innerHTML = `<div class="font-de text-base font-semibold" dir="ltr" style="text-align:right">${item.de}</div>
+      <div class="text-sm mt-0.5">${item.ar}</div><div class="text-xs opacity-60 mt-1">${item.pron}</div>`;
+    card.appendChild(check); card.appendChild(text);
+    wrap.appendChild(card);
+  });
+  return wrap;
+}
+
+/* ---------- DASHBOARD ---------- */
+function renderDashboard(){
+  const wrap = el('div','pt-4 flex flex-col gap-4');
+  const row = el('div','grid grid-cols-4 gap-2');
+  row.appendChild(statChip('XP', progress.xp));
+  row.appendChild(statChip('كلمات', learnedCount()));
+  row.appendChild(statChip('أيام متتالية', progress.streak.count));
+  row.appendChild(statChip('دقة الاختبار', progress.quizStats.answered ? Math.round(progress.quizStats.correct/progress.quizStats.answered*100)+'%' : '—'));
+  wrap.appendChild(row);
+
+  const levelCard = el('div','p-4 rounded-2xl'); levelCard.style.background='var(--paper-2)';
+  const lvl = currentLevel();
+  const nextAt = {1:20,2:60,3:120,4:null}[lvl];
+  levelCard.innerHTML = `<div class="font-de font-semibold">${levelLabel(lvl)}</div>
+    <div class="text-xs opacity-70 mt-1">${nextAt ? `${nextAt - learnedCount()} كلمة إضافية للمستوى التالي` : 'أعلى مستوى — استمر في المراجعة!'}</div>`;
+  wrap.appendChild(levelCard);
+
+  wrap.appendChild(el('div','font-de font-semibold text-sm mt-1','تقدّم الدورات'));
+  const list = el('div','flex flex-col gap-2');
+  DATA.courses.forEach(c=>{
+    const items=countCourseItems(c), learned=countCourseLearned(c);
+    if(items===0) return;
+    const pct=Math.round(learned/items*100);
+    const row2 = el('div','flex items-center gap-2 text-xs');
+    row2.innerHTML = `<div class="w-24 shrink-0 truncate opacity-80">${c.title_ar}</div>
+      <div class="flex-1 h-2 rounded-full" style="background:var(--paper-2)"><div class="h-2 rounded-full" style="width:${pct}%;background:var(--stamp-2)"></div></div>
+      <div class="w-10 text-left opacity-60">${learned}/${items}</div>`;
+    list.appendChild(row2);
+  });
+  wrap.appendChild(list);
+
+  const recent = progress.learnedOrder.slice(-10).reverse().map(id=>ITEM_MAP[id]).filter(Boolean);
+  if(recent.length){
+    wrap.appendChild(el('div','font-de font-semibold text-sm mt-1','آخر الكلمات المحفوظة'));
+    const chips = el('div','flex flex-wrap gap-2');
+    recent.forEach(it=>{
+      const c = el('div','px-2.5 py-1 rounded-full text-xs border'); c.style.borderColor='var(--line)';
+      c.innerHTML = `<span dir="ltr">${it.de}</span> · ${it.ar}`;
+      chips.appendChild(c);
+    });
+    wrap.appendChild(chips);
+  }
+  return wrap;
+}
+
+/* ---------- QUIZ ---------- */
+function pickDistinct(arr, n, excludeIds){
+  const pool = arr.filter(x=>!excludeIds.includes(x.id));
+  const out=[]; const copy=pool.slice();
+  while(out.length<n && copy.length){ out.push(copy.splice(Math.floor(Math.random()*copy.length),1)[0]); }
+  return out;
+}
+function buildQuizSession(n){
+  const ids = learnedIds();
+  const pool = ids.map(id=>ITEM_MAP[id]);
+  const availableSentences = DATA.sentences.filter(s=>progress.learned[s.item_id]);
+  const qs=[];
+  const shuffled = pool.slice().sort(()=>Math.random()-.5);
+  for(const it of shuffled){
+    if(qs.length>=n) break;
+    const useFill = availableSentences.length && Math.random()<0.3;
+    if(useFill){
+      const s = availableSentences[Math.floor(Math.random()*availableSentences.length)];
+      qs.push({ type:'fill', sentence:s });
+    } else if(Math.random()<0.5 && pool.length>=4){
+      const distract = pickDistinct(pool, 3, [it.id]).map(x=>x.ar);
+      const opts = [...distract, it.ar].sort(()=>Math.random()-.5);
+      qs.push({ type:'mc', dir:'de-ar', item:it, options:opts });
+    } else if(pool.length>=4) {
+      const distract = pickDistinct(pool, 3, [it.id]).map(x=>x.de);
+      const opts = [...distract, it.de].sort(()=>Math.random()-.5);
+      qs.push({ type:'mc', dir:'ar-de', item:it, options:opts });
+    }
+  }
+  return qs;
+}
+function renderQuiz(){
+  const wrap = el('div','pt-4');
+  if(learnedCount()<4){
+    wrap.appendChild(emptyState('علّم 4 كلمات على الأقل كـ "متعلمة" من الرئيسية حتى يقدر التطبيق يجهزلك اختبار منها.'));
+    return wrap;
+  }
+  if(!ui.quiz){
+    const card = el('div','p-5 rounded-2xl text-center flex flex-col gap-3'); card.style.background='var(--paper-2)';
+    card.innerHTML = `<div class="font-de font-semibold text-lg">جاهز للاختبار؟</div>
+      <div class="text-xs opacity-70">أسئلة من الكلمات اللي علّمتها إنك متعلمها (${learnedCount()} كلمة)</div>`;
+    const btn = primaryBtn('ابدأ اختبار (6 أسئلة)', ()=>{
+      ui.quiz = { questions: buildQuizSession(6), i:0, correct:0, answered:false };
+      render();
+    });
+    card.appendChild(btn);
+    wrap.appendChild(card);
+    return wrap;
+  }
+  wrap.appendChild(renderQuizRunner(ui.quiz, (q)=>{
+    progress.quizStats.answered++; if(q.wasCorrect) progress.quizStats.correct++;
+    if(q.wasCorrect){ progress.xp += XP_QUIZ_Q; touchStreak(); }
+    saveProgress();
+  }, ()=>{ ui.quiz=null; render(); }));
+  return wrap;
+}
+function renderQuizRunner(session, onAnswer, onExit){
+  const wrap = el('div','flex flex-col gap-4');
+  if(session.i >= session.questions.length){
+    const card = el('div','p-6 rounded-2xl text-center flex flex-col gap-3'); card.style.background='var(--paper-2)';
+    card.innerHTML = `<div class="font-de text-2xl font-semibold">${session.correct}/${session.questions.length}</div>
+      <div class="text-sm opacity-70">أحسنت! +${session.correct*XP_QUIZ_Q} XP</div>`;
+    card.appendChild(primaryBtn('إنهاء', onExit));
+    wrap.appendChild(card);
+    return wrap;
+  }
+  const q = session.questions[session.i];
+  wrap.appendChild(el('div','text-xs opacity-60', `السؤال ${session.i+1}/${session.questions.length}`));
+
+  if(q.type==='mc'){
+    const prompt = el('div','p-4 rounded-2xl text-center'); prompt.style.background='#fff'; prompt.style.border='1px solid var(--line)';
+    prompt.innerHTML = q.dir==='de-ar'
+      ? `<div class="font-de text-xl font-semibold" dir="ltr">${q.item.de}</div><div class="text-xs opacity-60 mt-1">اختر المعنى الصحيح</div>`
+      : `<div class="text-lg font-semibold">${q.item.ar}</div><div class="text-xs opacity-60 mt-1">اختر الكلمة الألمانية الصحيحة</div>`;
+    wrap.appendChild(prompt);
+    const opts = el('div','flex flex-col gap-2');
+    q.options.forEach(opt=>{
+      const b = el('button','p-3 rounded-xl border text-sm text-right', q.dir==='de-ar'?opt:`<span dir="ltr">${opt}</span>`);
+      b.style.borderColor='var(--line)'; b.style.background='#fff';
+      b.onclick=()=>{
+        if(session.answered) return;
+        session.answered=true;
+        const correctVal = q.dir==='de-ar'? q.item.ar : q.item.de;
+        const isRight = opt===correctVal;
+        q.wasCorrect = isRight;
+        if(isRight){ session.correct++; b.style.background='var(--good)'; b.style.color='#fff'; }
+        else { b.classList.add('shake'); b.style.borderColor='var(--bad)'; b.style.color='var(--bad)'; }
+        onAnswer(q);
+        setTimeout(()=>{ session.i++; session.answered=false; render(); }, isRight?550:900);
+      };
+      opts.appendChild(b);
+    });
+    wrap.appendChild(opts);
+  } else if(q.type==='fill'){
+    wrap.appendChild(renderFillCard(q.sentence, session.answered, (correct)=>{
+      if(session.answered) return; session.answered=true; q.wasCorrect=correct;
+      if(correct) session.correct++;
+      onAnswer(q);
+      setTimeout(()=>{ session.i++; session.answered=false; render(); }, correct?600:1100);
+    }));
+  }
+  return wrap;
+}
+
+/* ---------- fill-in-the-blank widget (shared: quiz + practice) ---------- */
+function renderFillCard(s, locked, onResult){
+  const wrap = el('div','p-4 rounded-2xl flex flex-col gap-3 pop-in'); wrap.style.border='1px solid var(--line)'; wrap.style.background='#fff';
+  const parts = s.de.split('___');
+  const sentenceLine = el('div','font-de text-lg leading-relaxed', '');
+  sentenceLine.setAttribute('dir','ltr'); sentenceLine.style.textAlign='right';
+  sentenceLine.appendChild(document.createTextNode(parts[0]));
+  const inputWrap = el('span','inline-block align-baseline');
+  const input = el('input','border-b-2 w-24 text-center font-de font-semibold bg-transparent');
+  input.style.borderColor='var(--stamp)'; input.placeholder='...'; input.autocomplete='off';
+  inputWrap.appendChild(input);
+  sentenceLine.appendChild(inputWrap);
+  sentenceLine.appendChild(document.createTextNode(parts[1]||''));
+  wrap.appendChild(sentenceLine);
+  wrap.appendChild(el('div','text-sm opacity-70', s.ar));
+
+  const lvl = currentLevel();
+  const hint = el('div','text-xs opacity-50 font-de tracking-widest', 'تلميح: '+hintReveal(s.answer, lvl));
+  wrap.appendChild(hint);
+
+  const feedback = el('div','text-xs h-4');
+  wrap.appendChild(feedback);
+
+  const btnRow = el('div','flex gap-2');
+  const checkBtn = el('button','flex-1 py-2 rounded-xl text-sm font-semibold text-white','تحقق');
+  checkBtn.style.background='var(--stamp)';
+  checkBtn.onclick=()=>{
+    const ok = input.value.trim().toLowerCase() === s.answer.toLowerCase();
+    if(ok){ feedback.textContent='✓ صحيح! +'+XP_PRACTICE+' XP'; feedback.style.color='var(--good)'; input.style.borderColor='var(--good)'; }
+    else { feedback.textContent='الإجابة الصحيحة: '+s.answer; feedback.style.color='var(--bad)'; input.style.borderColor='var(--bad)'; wrap.classList.add('shake'); }
+    onResult(ok);
+  };
+  btnRow.appendChild(checkBtn);
+  wrap.appendChild(btnRow);
+  return wrap;
+}
+
+/* ---------- PRACTICE: sentences & dialogues ---------- */
+function renderPractice(){
+  const wrap = el('div','pt-4 flex flex-col gap-4');
+  const tabs = el('div','flex gap-2');
+  [['sentences','جمل'],['dialogues','حوارات']].forEach(([id,label])=>{
+    const b = el('button','flex-1 py-2 rounded-xl text-sm font-semibold', label);
+    const active = ui.practiceSub===id;
+    b.style.background = active ? 'var(--stamp)' : 'var(--paper-2)';
+    b.style.color = active ? '#fff' : 'var(--ink)';
+    b.onclick=()=>{ ui.practiceSub=id; ui.activeDialogue=null; render(); };
+    tabs.appendChild(b);
+  });
+  wrap.appendChild(tabs);
+
+  if(ui.practiceSub==='sentences'){
+    const unlocked = DATA.sentences.filter(s=>progress.learned[s.item_id]);
+    const locked = DATA.sentences.filter(s=>!progress.learned[s.item_id]);
+    if(!unlocked.length) wrap.appendChild(emptyState('علّم كلمات مرتبطة بجمل (مثل Kaffee أو Hallo) لتفتح تمارين الجمل.'));
+    unlocked.forEach(s=> wrap.appendChild(renderFillCard(s, false, (ok)=>{
+      if(ok){ progress.xp += XP_PRACTICE; touchStreak(); } saveProgress();
+    })));
+    if(locked.length){
+      wrap.appendChild(el('div','text-xs opacity-50 mt-2', `🔒 ${locked.length} جملة أخرى تُفتح بعد تعلّم كلماتها`));
+    }
+  } else {
+    if(ui.activeDialogue){
+      wrap.appendChild(renderDialogue(DATA.dialogues.find(d=>d.id===ui.activeDialogue)));
+    } else {
+      DATA.dialogues.forEach(d=>{
+        const needed = d.lines.filter(l=>l.item_id).map(l=>l.item_id);
+        const have = needed.every(id=>progress.learned[id]);
+        const card = el('button','w-full text-right p-4 rounded-2xl border flex items-center gap-3');
+        card.style.borderColor='var(--line)'; card.style.background = have ? '#fff' : 'var(--paper-2)';
+        card.innerHTML = `<div class="flex-1">
+            <div class="font-de font-semibold text-sm">${have?'':'🔒 '}${d.title_de}</div>
+            <div class="text-xs opacity-70">${d.title_ar}</div>
+          </div>`;
+        if(have) card.onclick=()=>{ ui.activeDialogue=d.id; render(); };
+        else card.onclick=()=>{ alert('علّم الكلمات المستخدمة في هذا الحوار أولاً: '+needed.map(id=>ITEM_MAP[id]?.de).filter(Boolean).join('، ')); };
+        wrap.appendChild(card);
+      });
+    }
+  }
+  return wrap;
+}
+function renderDialogue(d){
+  const wrap = el('div','flex flex-col gap-3');
+  const back = el('button','text-xs opacity-60 text-right', '‹ رجوع لقائمة الحوارات');
+  back.onclick=()=>{ ui.activeDialogue=null; render(); };
+  wrap.appendChild(back);
+  d.lines.forEach(line=>{
+    const isB = line.speaker==='B';
+    const bubble = el('div','max-w-[85%] p-3 rounded-2xl text-sm');
+    bubble.style.background = isB ? 'var(--stamp)' : 'var(--paper-2)';
+    bubble.style.color = isB ? '#fff' : 'var(--ink)';
+    bubble.style.alignSelf = isB ? 'flex-start' : 'flex-end';
+    bubble.style.borderRadius = isB ? '18px 18px 18px 4px' : '18px 18px 4px 18px';
+
+    if(line.answer){
+      const parts = line.de.split('___');
+      const row = el('div','flex items-center gap-1 flex-wrap');
+      row.setAttribute('dir','ltr');
+      row.appendChild(document.createTextNode(parts[0]));
+      const input = el('input','border-b w-20 text-center bg-transparent font-de font-semibold');
+      input.style.borderColor = isB ? 'rgba(255,255,255,.7)' : 'var(--stamp)';
+      input.style.color = isB ? '#fff' : 'var(--ink)';
+      input.placeholder='...';
+      row.appendChild(input);
+      row.appendChild(document.createTextNode(parts[1]||''));
+      bubble.appendChild(row);
+      const hint = el('div','text-[11px] opacity-80 mt-1', 'تلميح: '+hintReveal(line.answer, currentLevel()));
+      bubble.appendChild(hint);
+      const check = el('button','text-[11px] underline mt-1', 'تحقق');
+      check.style.color = isB ? '#fff' : 'var(--stamp)';
+      const fb = el('div','text-[11px] mt-1 h-3');
+      check.onclick=()=>{
+        const ok = input.value.trim().toLowerCase()===line.answer.toLowerCase();
+        fb.textContent = ok ? '✓ صحيح' : ('الصواب: '+line.answer);
+        if(ok){ progress.xp += XP_PRACTICE; touchStreak(); saveProgress(); }
+      };
+      bubble.appendChild(check); bubble.appendChild(fb);
+    } else {
+      bubble.innerHTML = `<div dir="ltr">${line.de}</div>`;
+    }
+    const arLine = el('div','text-[11px] opacity-80 mt-1', line.ar);
+    if(!line.answer) bubble.appendChild(arLine);
+    wrap.appendChild(bubble);
+  });
+  wrap.style.display='flex';
+  return wrap;
+}
+
+/* ---------- DAILY CHALLENGE ---------- */
+function renderDaily(){
+  const wrap = el('div','pt-4 flex flex-col gap-4');
+  const t = todayStr();
+  const doneToday = progress.daily.date===t && progress.daily.done;
+
+  if(doneToday){
+    const card = el('div','p-6 rounded-2xl text-center flex flex-col gap-2'); card.style.background='var(--paper-2)';
+    card.innerHTML = `<div class="font-de text-lg font-semibold">🎉 أنجزت تحدي اليوم</div>
+      <div class="text-sm opacity-70">النتيجة: ${progress.daily.score}/${progress.daily.total} — سلسلة ${progress.streak.count} يوم 🔥</div>
+      <div class="text-xs opacity-50 mt-1">عد غدا لتحدي جديد</div>`;
+    wrap.appendChild(card);
+    return wrap;
+  }
+  if(learnedCount()<4){
+    wrap.appendChild(emptyState('علّم 4 كلمات على الأقل لفتح التحدي اليومي.'));
+    return wrap;
+  }
+  if(!ui.daily){
+    const card = el('div','p-5 rounded-2xl text-center flex flex-col gap-3'); card.style.background='var(--paper-2)';
+    card.innerHTML = `<div class="font-de font-semibold text-lg">تحدي اليوم 🎁</div>
+      <div class="text-xs opacity-70">5 أسئلة + مكافأة ${XP_DAILY_BONUS} XP عند الإنجاز</div>`;
+    card.appendChild(primaryBtn('ابدأ التحدي', ()=>{
+      ui.daily = { questions: buildQuizSession(5), i:0, correct:0, answered:false };
+      render();
+    }));
+    wrap.appendChild(card);
+    return wrap;
+  }
+  if(ui.daily.i >= ui.daily.questions.length){
+    progress.daily = { date:t, done:true, score:ui.daily.correct, total:ui.daily.questions.length };
+    progress.xp += XP_DAILY_BONUS;
+    touchStreak(); saveProgress();
+    const card = el('div','p-6 rounded-2xl text-center flex flex-col gap-2'); card.style.background='var(--paper-2)';
+    card.innerHTML = `<div class="font-de text-2xl font-semibold">${ui.daily.correct}/${ui.daily.questions.length}</div>
+      <div class="text-sm opacity-70">+${XP_DAILY_BONUS} XP مكافأة يومية</div>`;
+    card.appendChild(primaryBtn('تم', ()=>{ ui.daily=null; render(); }));
+    wrap.appendChild(card);
+    return wrap;
+  }
+  wrap.appendChild(renderQuizRunner(ui.daily, ()=>{}, ()=>{}));
+  return wrap;
+}
+
+/* ---------- root render ---------- */
+function render(){
+  const app = document.getElementById('app');
+  app.innerHTML='';
+  app.appendChild(renderTopBar());
+  const body = el('div','flex-1 px-4');
+  if(ui.tab==='home') body.appendChild(renderHome());
+  else if(ui.tab==='dashboard') body.appendChild(renderDashboard());
+  else if(ui.tab==='quiz') body.appendChild(renderQuiz());
+  else if(ui.tab==='practice') body.appendChild(renderPractice());
+  else if(ui.tab==='daily') body.appendChild(renderDaily());
+  app.appendChild(body);
+  app.appendChild(renderBottomNav());
+}
+
+async function init(){
+  const app = document.getElementById('app');
+  app.innerHTML = '<div class="flex-1 flex items-center justify-center text-sm opacity-60">... جارٍ التحميل</div>';
+  try{
+    const res = await fetch('data.json');
+    DATA = await res.json();
+    if(!DATA.sentences) DATA.sentences=[];
+    if(!DATA.dialogues) DATA.dialogues=[];
+    buildItemMap();
+  }catch(e){
+    app.innerHTML = '<div class="flex-1 flex items-center justify-center text-center text-sm opacity-70 px-6">تعذّر تحميل data.json — تأكد من فتح الملف عبر خادم محلي (localhost) وليس مباشرة من نظام الملفات</div>';
+    return;
+  }
+  render();
+}
+init();
+</script>
+</body>
+</html>
